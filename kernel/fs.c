@@ -416,6 +416,52 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+  bn -= NINDIRECT;
+
+  // 3. Doubly-indirect block
+  if(bn < NINDIRECT * NINDIRECT){
+    // Lấy/Tạo block Double Indirect (tầng gốc)
+    if((addr = ip->addrs[NDIRECT+1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+    
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    
+    // Lấy/Tạo block Singly-indirect (tầng trung gian)
+    uint i1 = bn / NINDIRECT; 
+    uint i2 = bn % NINDIRECT; 
+    
+    if((addr = a[i1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0){
+        brelse(bp); // Quan trọng: Giải phóng buffer trước khi return
+        return 0;
+      }
+      a[i1] = addr;
+      log_write(bp);
+    }
+    brelse(bp); // Xong tầng 1 (giải phóng bp của block double indirect)
+
+    // Lấy/Tạo block dữ liệu (tầng cuối)
+    // addr lúc này là địa chỉ của block singly-indirect vừa lấy được
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[i2]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0){
+        brelse(bp); // Quan trọng: Giải phóng buffer trước khi return
+        return 0;
+      }
+      a[i2] = addr;
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
 
   panic("bmap: out of range");
 }
@@ -446,6 +492,30 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+// 3. Free doubly-indirect blocks
+  if(ip->addrs[NDIRECT+1]){
+    struct buf *bp2; // Thêm biến mới
+    uint *a2;        // Thêm biến mới
+    
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(i = 0; i < NINDIRECT; i++){
+      if(a[i]){
+        bp2 = bread(ip->dev, a[i]); // Dùng bp2
+        a2 = (uint*)bp2->data;      // Dùng a2
+        for(j = 0; j < NINDIRECT; j++){
+          if(a2[j])
+            bfree(ip->dev, a2[j]);
+        }
+        brelse(bp2);                // Giải phóng bp2
+        bfree(ip->dev, a[i]); 
+      }
+    }
+    brelse(bp); // Bây giờ mới giải phóng bp tầng ngoài an toàn
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
