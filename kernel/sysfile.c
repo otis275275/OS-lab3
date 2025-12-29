@@ -309,6 +309,7 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   int n;
+  int follow = 10; 
 
   argint(1, &omode);
   if((n = argstr(0, path, MAXPATH)) < 0)
@@ -328,6 +329,34 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+
+    if(omode & O_NOFOLLOW){
+      // chỉ mở chính symlink, KHÔNG follow
+      // nếu không phải symlink thì OK bình thường
+    } else {
+      // follow symlink tối đa follow lần
+      while(ip->type == T_SYMLINK && follow > 0){
+        char target[MAXPATH];
+        // đọc target từ inode data block
+        readi(ip, 0, (uint64)target, 0, sizeof(target));
+        iunlockput(ip);
+        // namei() tới target
+        if((ip = namei(target)) == 0){
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+        follow--;
+      }
+
+      if(ip->type == T_SYMLINK){
+        // quá sâu -> loop
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -501,5 +530,34 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();      
+
+  // tạo inode mới
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+
+  // lưu chuỗi target vào data block của inode
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)) != strlen(target)){
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
   return 0;
 }
